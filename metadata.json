@@ -1,0 +1,5 @@
+{
+  "name": "DataInsight - Advanced Analysis Suite",
+  "description": "A lightweight, interactive data analysis tool for TXT, CSV, and Excel files. Features statistical calculations, dynamic visualizations, and AI-powered insights. Created by DaKES Institute, Author: Fred Y. Ye (叶鹰).",
+  "requestFramePermissions": []
+}
