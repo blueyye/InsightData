@@ -43,4 +43,5 @@ export interface Translation {
   footerCredits: string;
   noData: string;
   exportCsv: string;
+  exportExcel: string;
 }

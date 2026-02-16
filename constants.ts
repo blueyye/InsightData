@@ -22,7 +22,8 @@ export const TRANSLATIONS: Record<Language, Translation> = {
     correlation: "Correlation Matrix",
     footerCredits: "Produced by DaKES Institute • Author: Fred Y. Ye (叶鹰)",
     noData: "Please upload data to start analysis",
-    exportCsv: "Export to CSV"
+    exportCsv: "Export to CSV",
+    exportExcel: "Export to Excel"
   },
   cn: {
     title: "DataInsight 洞见数据",
@@ -44,6 +45,7 @@ export const TRANSLATIONS: Record<Language, Translation> = {
     correlation: "相关系数矩阵",
     footerCredits: "制作：DaKES Institute • 作者：Fred Y. Ye (叶鹰)",
     noData: "请上传数据以开始分析",
-    exportCsv: "导出为 CSV"
+    exportCsv: "导出为 CSV",
+    exportExcel: "导出为 Excel"
   }
 };

@@ -1,11 +1,11 @@
-import React, { useState, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   ScatterChart, Scatter, Cell, Legend, LineChart, Line, PieChart, Pie
 } from 'recharts';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
-import { toPng } from 'html-to-image';
+import { toPng, toJpeg, toSvg } from 'html-to-image';
 import { 
   LayoutDashboard, 
   FileSpreadsheet, 
@@ -25,7 +25,13 @@ import {
   ChevronDown,
   PieChart as PieIcon,
   TrendingUp,
-  BoxSelect
+  BoxSelect,
+  Palette,
+  FileDown,
+  Image as ImageIcon,
+  FileCode,
+  Layers,
+  Check
 } from 'lucide-react';
 
 import { DataPoint, StatisticalSummary, CorrelationMatrix, Language } from './types';
@@ -43,6 +49,40 @@ interface Filter {
 }
 
 type VizMode = 'distribution' | 'relationship' | 'trends';
+type ExportFormat = 'png' | 'jpeg' | 'svg';
+
+const CustomTooltip = ({ active, payload, label }: any) => {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-white/95 backdrop-blur-sm p-4 border border-slate-100 shadow-2xl rounded-2xl animate-in fade-in zoom-in duration-200 min-w-[160px]">
+        {label && (
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 border-b border-slate-50 pb-2 truncate max-w-[200px]">
+            {label}
+          </p>
+        )}
+        <div className="space-y-1.5">
+          {payload.map((entry: any, index: number) => (
+            <div key={index} className="flex items-center justify-between space-x-6">
+              <span className="flex items-center space-x-2">
+                <div 
+                  className="w-2 h-2 rounded-full" 
+                  style={{ backgroundColor: entry.color || entry.fill || '#4f46e5' }}
+                ></div>
+                <span className="text-[11px] font-bold text-slate-600 truncate max-w-[100px]">
+                  {entry.name}
+                </span>
+              </span>
+              <span className="text-[11px] font-black text-indigo-600">
+                {typeof entry.value === 'number' ? entry.value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : entry.value}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  return null;
+};
 
 const App: React.FC = () => {
   const [data, setData] = useState<DataPoint[]>([]);
@@ -52,22 +92,29 @@ const App: React.FC = () => {
   const [loadingAI, setLoadingAI] = useState(false);
   const [aiInsight, setAiInsight] = useState<string | null>(null);
 
-  // Visualization State
   const [vizMode, setVizMode] = useState<VizMode>('distribution');
-
-  // Filtering State
   const [activeFilters, setActiveFilters] = useState<Filter[]>([]);
   const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
-
-  // Scatter Plot Controls
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [lastExportFormat, setLastExportFormat] = useState<ExportFormat | null>(null);
   const [scatterX, setScatterX] = useState<string>('');
   const [scatterY, setScatterY] = useState<string>('');
   const [scatterColor, setScatterColor] = useState<string>('');
   
-  // Ref for chart export
   const chartRef = useRef<HTMLDivElement>(null);
-
+  const exportMenuRef = useRef<HTMLDivElement>(null);
   const t = TRANSLATIONS[lang];
+
+  // Close export menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(event.target as Node)) {
+        setIsExportMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const numericColumns = useMemo(() => {
     if (!data.length) return [];
@@ -81,11 +128,10 @@ const App: React.FC = () => {
     if (!data.length) return [];
     return columns.filter(col => {
       const uniqueValues = new Set(data.slice(0, 100).map(r => String(r[col] ?? 'null')));
-      return uniqueValues.size > 1 && uniqueValues.size <= 10;
+      return uniqueValues.size > 1 && uniqueValues.size <= 15;
     });
   }, [data, columns]);
 
-  // Derived filtered data
   const filteredData = useMemo(() => {
     if (activeFilters.length === 0) return data;
     return data.filter(row => {
@@ -114,9 +160,7 @@ const App: React.FC = () => {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     const extension = file.name.split('.').pop()?.toLowerCase();
-
     if (extension === 'csv' || extension === 'txt') {
       Papa.parse(file, {
         header: true,
@@ -128,7 +172,6 @@ const App: React.FC = () => {
           setColumns(fields);
           setAiInsight(null);
           setActiveFilters([]); 
-          
           const numCols = fields.filter(col => {
             const sample = parsedData.slice(0, 10).map(r => r[col]);
             return sample.some(v => parseNumber(v) !== null);
@@ -188,19 +231,58 @@ const App: React.FC = () => {
     document.body.removeChild(link);
   };
 
-  const handleExportChart = useCallback(() => {
+  const downloadExcel = () => {
+    const ws = XLSX.utils.json_to_sheet(filteredData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "DataInsight Export");
+    XLSX.writeFile(wb, "exported_data.xlsx");
+  };
+
+  const handleExportChart = useCallback((format: ExportFormat) => {
     if (chartRef.current === null) return;
-    toPng(chartRef.current, { backgroundColor: '#ffffff', cacheBust: true })
+    
+    setLastExportFormat(format);
+    
+    // Minimal delay to show the highlight state before closing the menu
+    setTimeout(() => {
+      setIsExportMenuOpen(false);
+    }, 150);
+    
+    const options = { 
+      backgroundColor: '#ffffff', 
+      cacheBust: true,
+      style: {
+        borderRadius: '0px',
+        boxShadow: 'none',
+        border: 'none'
+      }
+    };
+
+    let promise;
+    switch (format) {
+      case 'jpeg':
+        promise = toJpeg(chartRef.current, { ...options, quality: 0.95 });
+        break;
+      case 'svg':
+        promise = toSvg(chartRef.current, options);
+        break;
+      case 'png':
+      default:
+        promise = toPng(chartRef.current, options);
+        break;
+    }
+
+    promise
       .then((dataUrl) => {
         const link = document.createElement('a');
-        link.download = `data-insight-chart-${Date.now()}.png`;
+        link.download = `datainsight-${vizMode}-${Date.now()}.${format}`;
         link.href = dataUrl;
         link.click();
       })
       .catch((err) => {
-        console.error('oops, something went wrong!', err);
+        console.error('Export failed:', err);
       });
-  }, [chartRef]);
+  }, [chartRef, vizMode]);
 
   const colorMap = useMemo(() => {
     if (!scatterColor || !filteredData.length) return null;
@@ -212,13 +294,22 @@ const App: React.FC = () => {
     return map;
   }, [filteredData, scatterColor]);
 
+  const groupedScatterData = useMemo(() => {
+    if (!scatterColor) return { "Data Points": filteredData.slice(0, 800) };
+    const groups: Record<string, DataPoint[]> = {};
+    filteredData.slice(0, 800).forEach(d => {
+      const val = String(d[scatterColor] ?? 'null');
+      if (!groups[val]) groups[val] = [];
+      groups[val].push(d);
+    });
+    return groups;
+  }, [filteredData, scatterColor]);
+
   const addFilter = (col: string) => {
     const isNumeric = numericColumns.includes(col);
     const uniqueValues = Array.from(new Set(data.map(d => String(d[col] ?? 'null'))));
-    
     let type: Filter['type'] = 'text';
     let defaultValue: any = '';
-
     if (isNumeric) {
       type = 'number';
       const nums = data.map(d => parseNumber(d[col])).filter((n): n is number => n !== null);
@@ -227,7 +318,6 @@ const App: React.FC = () => {
       type = 'category';
       defaultValue = new Set(uniqueValues);
     }
-
     const newFilter: Filter = {
       id: Math.random().toString(36).substr(2, 9),
       column: col,
@@ -268,8 +358,7 @@ const App: React.FC = () => {
               <p className="text-[10px] text-slate-500 mt-1 uppercase tracking-widest font-bold">{t.subtitle}</p>
             </div>
           </div>
-          
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-3">
             <button 
               onClick={() => setLang(lang === 'en' ? 'cn' : 'en')}
               className="flex items-center space-x-2 px-3 py-1.5 rounded-lg border border-slate-200 text-sm font-medium hover:bg-slate-50 transition-colors"
@@ -278,13 +367,22 @@ const App: React.FC = () => {
               <span>{lang === 'en' ? '中文' : 'English'}</span>
             </button>
             {data.length > 0 && (
-              <button 
-                onClick={downloadCSV}
-                className="flex items-center space-x-2 px-3 py-1.5 bg-slate-900 text-white rounded-lg text-sm font-medium hover:bg-slate-800 transition-colors"
-              >
-                <Download size={16} />
-                <span className="hidden sm:inline">{t.exportCsv}</span>
-              </button>
+              <div className="flex items-center space-x-2">
+                <button 
+                  onClick={downloadExcel}
+                  className="flex items-center space-x-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 transition-colors shadow-lg shadow-emerald-200/50"
+                >
+                  <FileDown size={16} />
+                  <span className="hidden sm:inline">{t.exportExcel}</span>
+                </button>
+                <button 
+                  onClick={downloadCSV}
+                  className="flex items-center space-x-2 px-3 py-1.5 bg-slate-900 text-white rounded-lg text-sm font-medium hover:bg-slate-800 transition-colors"
+                >
+                  <Download size={16} />
+                  <span className="hidden sm:inline">{t.exportCsv}</span>
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -520,13 +618,59 @@ const App: React.FC = () => {
                     </button>
                   </div>
                   
-                  <button 
-                    onClick={handleExportChart}
-                    className="flex items-center space-x-2 px-5 py-2.5 bg-white text-slate-700 rounded-2xl font-black text-xs hover:bg-slate-50 transition-all border border-slate-200 uppercase tracking-widest"
-                  >
-                    <Camera size={18} />
-                    <span>Snapshot</span>
-                  </button>
+                  <div className="relative" ref={exportMenuRef}>
+                    <button 
+                      onClick={() => setIsExportMenuOpen(!isExportMenuOpen)}
+                      className="flex items-center space-x-2 px-5 py-2.5 bg-white text-slate-700 rounded-2xl font-black text-xs hover:bg-slate-100 transition-all border border-slate-200 uppercase tracking-widest shadow-sm active:scale-95 group"
+                    >
+                      <Camera size={18} className="text-slate-400 group-hover:text-indigo-600 transition-colors" />
+                      <span>Export Chart</span>
+                      <ChevronDown size={14} className={`transition-transform duration-300 ${isExportMenuOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                    
+                    {isExportMenuOpen && (
+                      <div className="absolute right-0 mt-3 w-52 bg-white border border-slate-100 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.15)] z-[100] overflow-hidden animate-in fade-in zoom-in-95 duration-200 origin-top-right">
+                        <div className="p-3.5 bg-slate-50/70 border-b border-slate-50 flex items-center justify-between">
+                          <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Select Format</span>
+                          {lastExportFormat && (
+                            <span className="text-[8px] font-black text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded uppercase">Last Used: {lastExportFormat}</span>
+                          )}
+                        </div>
+                        <div className="p-1.5 space-y-0.5">
+                          <button 
+                            onClick={() => handleExportChart('png')}
+                            className={`w-full flex items-center justify-between px-4 py-3 text-xs font-bold rounded-xl transition-all group ${lastExportFormat === 'png' ? 'bg-indigo-50 text-indigo-600' : 'text-slate-600 hover:bg-slate-50 hover:text-indigo-600'}`}
+                          >
+                            <div className="flex items-center space-x-3">
+                              <ImageIcon size={16} className={`${lastExportFormat === 'png' ? 'text-indigo-500' : 'text-slate-400 group-hover:text-indigo-500'}`} />
+                              <span>PNG Image</span>
+                            </div>
+                            {lastExportFormat === 'png' && <Check size={14} className="animate-in zoom-in duration-300" />}
+                          </button>
+                          <button 
+                            onClick={() => handleExportChart('jpeg')}
+                            className={`w-full flex items-center justify-between px-4 py-3 text-xs font-bold rounded-xl transition-all group ${lastExportFormat === 'jpeg' ? 'bg-indigo-50 text-indigo-600' : 'text-slate-600 hover:bg-slate-50 hover:text-indigo-600'}`}
+                          >
+                            <div className="flex items-center space-x-3">
+                              <ImageIcon size={16} className={`${lastExportFormat === 'jpeg' ? 'text-indigo-500' : 'text-slate-400 group-hover:text-indigo-500'}`} />
+                              <span>JPEG Image</span>
+                            </div>
+                            {lastExportFormat === 'jpeg' && <Check size={14} className="animate-in zoom-in duration-300" />}
+                          </button>
+                          <button 
+                            onClick={() => handleExportChart('svg')}
+                            className={`w-full flex items-center justify-between px-4 py-3 text-xs font-bold rounded-xl transition-all group ${lastExportFormat === 'svg' ? 'bg-indigo-50 text-indigo-600' : 'text-slate-600 hover:bg-slate-50 hover:text-indigo-600'}`}
+                          >
+                            <div className="flex items-center space-x-3">
+                              <FileCode size={16} className={`${lastExportFormat === 'svg' ? 'text-indigo-500' : 'text-slate-400 group-hover:text-indigo-500'}`} />
+                              <span>SVG Vector</span>
+                            </div>
+                            {lastExportFormat === 'svg' && <Check size={14} className="animate-in zoom-in duration-300" />}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div ref={chartRef} className="p-2 -m-2">
@@ -542,7 +686,7 @@ const App: React.FC = () => {
                               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                               <XAxis dataKey={columns[0] || 'index'} hide />
                               <YAxis axisLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
-                              <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                              <Tooltip content={<CustomTooltip />} />
                               <Bar dataKey={col} fill={COLORS[i % COLORS.length]} radius={[4, 4, 0, 0]} />
                             </BarChart>
                           </ResponsiveContainer>
@@ -566,7 +710,7 @@ const App: React.FC = () => {
                                   <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                                 ))}
                               </Pie>
-                              <Tooltip />
+                              <Tooltip content={<CustomTooltip />} />
                               <Legend wrapperStyle={{ fontSize: '10px', fontWeight: 'bold' }} />
                             </PieChart>
                           </ResponsiveContainer>
@@ -579,47 +723,92 @@ const App: React.FC = () => {
                     <div className="space-y-6">
                       <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-6">
                         <div className="flex items-center space-x-3">
-                          <BoxSelect size={20} className="text-indigo-600" />
-                          <h3 className="font-black text-slate-900 uppercase tracking-tight">Correlation Explorer</h3>
+                          <div className="p-2 bg-indigo-50 rounded-lg text-indigo-600">
+                            <BoxSelect size={20} />
+                          </div>
+                          <div>
+                            <h3 className="font-black text-slate-900 uppercase tracking-tight text-sm">Correlation Explorer</h3>
+                            <p className="text-[10px] text-slate-400 font-bold uppercase">Multidimensional Mapping</p>
+                          </div>
                         </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 flex-1 max-w-2xl">
-                          <select 
-                            value={scatterX} 
-                            onChange={(e) => setScatterX(e.target.value)}
-                            className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs font-bold focus:ring-2 focus:ring-indigo-500 outline-none"
-                          >
-                            {numericColumns.map(col => <option key={col} value={col}>X: {col}</option>)}
-                          </select>
-                          <select 
-                            value={scatterY} 
-                            onChange={(e) => setScatterY(e.target.value)}
-                            className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs font-bold focus:ring-2 focus:ring-indigo-500 outline-none"
-                          >
-                            {numericColumns.map(col => <option key={col} value={col}>Y: {col}</option>)}
-                          </select>
-                          <select 
-                            value={scatterColor} 
-                            onChange={(e) => setScatterColor(e.target.value)}
-                            className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs font-bold focus:ring-2 focus:ring-indigo-500 outline-none"
-                          >
-                            <option value="">No Color Segment</option>
-                            {columns.map(col => <option key={col} value={col}>Color: {col}</option>)}
-                          </select>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 flex-1 max-2xl">
+                          <div className="flex flex-col space-y-1">
+                            <span className="text-[8px] font-black uppercase text-slate-400 ml-1">X Axis (Numeric)</span>
+                            <select 
+                              value={scatterX} 
+                              onChange={(e) => setScatterX(e.target.value)}
+                              className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            >
+                              {numericColumns.map(col => <option key={col} value={col}>{col}</option>)}
+                            </select>
+                          </div>
+                          <div className="flex flex-col space-y-1">
+                            <span className="text-[8px] font-black uppercase text-slate-400 ml-1">Y Axis (Numeric)</span>
+                            <select 
+                              value={scatterY} 
+                              onChange={(e) => setScatterY(e.target.value)}
+                              className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            >
+                              {numericColumns.map(col => <option key={col} value={col}>{col}</option>)}
+                            </select>
+                          </div>
+                          <div className="flex flex-col space-y-1">
+                            <span className="text-[8px] font-black uppercase text-slate-400 ml-1 flex items-center gap-1">
+                              <Palette size={8} /> Color Segment
+                            </span>
+                            <select 
+                              value={scatterColor} 
+                              onChange={(e) => setScatterColor(e.target.value)}
+                              className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-xs font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            >
+                              <option value="">No Color Segment</option>
+                              {columns.map(col => <option key={col} value={col}>{col}</option>)}
+                            </select>
+                          </div>
                         </div>
                       </div>
-                      <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-xl h-[500px]">
+                      <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-xl h-[550px] relative">
+                        <div className="absolute top-8 left-8 z-10">
+                          <span className="text-[9px] font-black uppercase bg-indigo-600 text-white px-2 py-0.5 rounded-full shadow-sm tracking-widest">
+                            {scatterX} vs {scatterY}
+                          </span>
+                        </div>
                         <ResponsiveContainer width="100%" height="100%">
-                          <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+                          <ScatterChart margin={{ top: 40, right: 20, bottom: 20, left: 20 }}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-                            <XAxis type="number" dataKey={scatterX} name={scatterX} axisLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
-                            <YAxis type="number" dataKey={scatterY} name={scatterY} axisLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
-                            <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-                            {scatterColor && <Legend verticalAlign="top" align="right" />}
-                            <Scatter name="Data Cluster" data={filteredData.slice(0, 500)}>
-                              {filteredData.slice(0, 500).map((entry, index) => (
-                                <Cell key={`cell-${index}`} fill={colorMap ? colorMap[String(entry[scatterColor] ?? 'null')] : '#6366f1'} fillOpacity={0.7} />
-                              ))}
-                            </Scatter>
+                            <XAxis 
+                              type="number" 
+                              dataKey={scatterX} 
+                              name={scatterX} 
+                              axisLine={false} 
+                              tick={{ fill: '#64748b', fontSize: 10, fontWeight: 700 }} 
+                            />
+                            <YAxis 
+                              type="number" 
+                              dataKey={scatterY} 
+                              name={scatterY} 
+                              axisLine={false} 
+                              tick={{ fill: '#64748b', fontSize: 10, fontWeight: 700 }} 
+                            />
+                            <Tooltip 
+                              cursor={{ strokeDasharray: '3 3', stroke: '#cbd5e1' }}
+                              content={<CustomTooltip />}
+                            />
+                            <Legend 
+                              verticalAlign="top" 
+                              align="right" 
+                              iconType="circle"
+                              wrapperStyle={{ paddingBottom: '30px', fontSize: '10px', fontWeight: 'bold', textTransform: 'uppercase' }} 
+                            />
+                            {Object.entries(groupedScatterData).map(([groupName, groupData], idx) => (
+                              <Scatter 
+                                key={groupName} 
+                                name={groupName} 
+                                data={groupData} 
+                                fill={colorMap ? colorMap[groupName] : (scatterColor ? COLORS[idx % COLORS.length] : '#6366f1')} 
+                                fillOpacity={0.7} 
+                              />
+                            ))}
                           </ScatterChart>
                         </ResponsiveContainer>
                       </div>
@@ -637,7 +826,7 @@ const App: React.FC = () => {
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                                 <XAxis dataKey={columns[0] || 'index'} hide />
                                 <YAxis axisLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
-                                <Tooltip />
+                                <Tooltip content={<CustomTooltip />} />
                                 <Line 
                                   type="monotone" 
                                   dataKey={col} 
@@ -675,7 +864,6 @@ const App: React.FC = () => {
                         <Plus size={16} />
                         <span>Add Filter</span>
                       </button>
-                      
                       {isFilterPanelOpen && (
                         <div className="absolute right-0 mt-2 w-64 bg-white border border-slate-200 rounded-2xl shadow-2xl z-[60] overflow-hidden">
                           <div className="p-3 border-b border-slate-50 bg-slate-50 text-[10px] font-black uppercase text-slate-400 tracking-widest">Select Column to Filter</div>
@@ -695,7 +883,6 @@ const App: React.FC = () => {
                       )}
                     </div>
                   </div>
-
                   <div className="p-6 flex flex-wrap gap-4 bg-white min-h-[80px]">
                     {activeFilters.length === 0 ? (
                       <div className="flex items-center space-x-2 text-slate-400 italic text-sm font-medium">
@@ -711,7 +898,6 @@ const App: React.FC = () => {
                               <X size={14} />
                             </button>
                           </div>
-                          
                           {filter.type === 'text' && (
                             <div className="relative">
                               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -724,7 +910,6 @@ const App: React.FC = () => {
                               />
                             </div>
                           )}
-
                           {filter.type === 'number' && (
                             <div className="grid grid-cols-2 gap-2">
                               <div>
@@ -747,7 +932,6 @@ const App: React.FC = () => {
                               </div>
                             </div>
                           )}
-
                           {filter.type === 'category' && (
                             <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
                               {Array.from(new Set(data.map(d => String(d[filter.column] ?? 'null')))).slice(0, 15).map(val => {
@@ -774,7 +958,6 @@ const App: React.FC = () => {
                     )}
                   </div>
                 </div>
-
                 <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
                   <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
                     <h3 className="font-black text-slate-900 uppercase tracking-tight flex items-center space-x-2">
